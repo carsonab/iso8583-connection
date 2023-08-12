@@ -13,7 +13,7 @@ import (
 
 type Options struct {
 	// ConnectTimeout sets the timeout for establishing new connections.
-	ConnectTimeout time.Duration
+	//ConnectTimeout time.Duration
 
 	// SendTimeout sets the timeout for a Send operation
 	SendTimeout time.Duration
@@ -50,8 +50,6 @@ type Options struct {
 	// established with the server
 	ConnectionEstablishedHandler func(c *Connection)
 
-	TLSConfig *tls.Config
-
 	// ErrorHandler is called in a goroutine with the errors that can't be
 	// returned to the caller
 	ErrorHandler func(err error)
@@ -73,7 +71,24 @@ type Options struct {
 	// MessageWriter is used to write a message to the connection
 	// if set, connection's MessageLengthWriter will be ignored
 	MessageWriter MessageWriter
+
+	// NetConnFactory is used to specify
+	//NetConnFactory func() (net.Conn, error)
 }
+
+type Option func(*Options) error
+
+// CABNOTE: don't need a struct with 1 member...
+//type TLSOptions struct {
+//	// CABNOTE this wont really make as much sense anymore
+//	// It would only be used if you didn't give a connection builder
+//	// So maybe I should add some helper fxns for TCP connection builder or TLS connectino builder
+//	// And we remove this and you just pass the connection builder into Connect
+//	// So this end up may being a breaking change
+//	TLSConfig *tls.Config
+//}
+
+type TLSOption func(config *tls.Config) error
 
 type MessageReader interface {
 	ReadMessage(r io.Reader) (*iso8583.Message, error)
@@ -83,16 +98,14 @@ type MessageWriter interface {
 	WriteMessage(w io.Writer, message *iso8583.Message) error
 }
 
-type Option func(*Options) error
-
 func GetDefaultOptions() Options {
 	return Options{
-		ConnectTimeout:     10 * time.Second,
-		SendTimeout:        30 * time.Second,
-		IdleTime:           5 * time.Second,
-		ReadTimeout:        60 * time.Second,
-		PingHandler:        nil,
-		TLSConfig:          nil,
+		//ConnectTimeout: 10 * time.Second,
+		SendTimeout: 30 * time.Second,
+		IdleTime:    5 * time.Second,
+		ReadTimeout: 60 * time.Second,
+		PingHandler: nil,
+		// TLSConfig:          nil,
 		RequestIDGenerator: &defaultRequestIDGenerator{},
 	}
 }
@@ -114,12 +127,12 @@ func SendTimeout(d time.Duration) Option {
 }
 
 // ConnectTimeout sets an SendTimeout option
-func ConnectTimeout(d time.Duration) Option {
-	return func(o *Options) error {
-		o.ConnectTimeout = d
-		return nil
-	}
-}
+//func ConnectTimeout(d time.Duration) Option {
+//	return func(o *Options) error {
+//		o.ConnectTimeout = d
+//		return nil
+//	}
+//}
 
 // ReadTimeout sets an ReadTimeout option
 func ReadTimeout(d time.Duration) Option {
@@ -194,16 +207,23 @@ func OnClose(h func(c *Connection) error) Option {
 	}
 }
 
+//func NetConnFactory(c func() (net.Conn, error)) Option {
+//	return func(opts *Options) error {
+//		opts.NetConnFactory = c
+//		return nil
+//	}
+//}
+
 func defaultTLSConfig() *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,
 	}
 }
 
-func ClientCert(cert, key string) Option {
-	return func(o *Options) error {
-		if o.TLSConfig == nil {
-			o.TLSConfig = defaultTLSConfig()
+func ClientCert(cert, key string) TLSOption {
+	return func(c *tls.Config) error {
+		if c == nil {
+			c = defaultTLSConfig()
 		}
 
 		certificate, err := tls.LoadX509KeyPair(cert, key)
@@ -211,17 +231,17 @@ func ClientCert(cert, key string) Option {
 			return fmt.Errorf("loading certificate: %w", err)
 		}
 
-		o.TLSConfig.Certificates = []tls.Certificate{certificate}
+		c.Certificates = []tls.Certificate{certificate}
 
 		return nil
 	}
 }
 
 // RootCAs creates pool of Root CAs
-func RootCAs(file ...string) Option {
-	return func(o *Options) error {
-		if o.TLSConfig == nil {
-			o.TLSConfig = defaultTLSConfig()
+func RootCAs(file ...string) TLSOption {
+	return func(c *tls.Config) error {
+		if c == nil {
+			c = defaultTLSConfig()
 		}
 
 		certPool := x509.NewCertPool()
@@ -238,18 +258,18 @@ func RootCAs(file ...string) Option {
 			}
 		}
 
-		o.TLSConfig.RootCAs = certPool
+		c.RootCAs = certPool
 
 		return nil
 	}
 }
 
-func SetTLSConfig(cfg func(*tls.Config)) Option {
-	return func(o *Options) error {
-		if o.TLSConfig == nil {
-			o.TLSConfig = defaultTLSConfig()
+func SetTLSConfig(cfg func(*tls.Config)) TLSOption {
+	return func(c *tls.Config) error {
+		if c == nil {
+			c = defaultTLSConfig()
 		}
-		cfg(o.TLSConfig)
+		cfg(c)
 		return nil
 	}
 }

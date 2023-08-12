@@ -25,6 +25,51 @@ type MessageLengthReader func(r io.Reader) (int, error)
 // MessageLengthWriter writes message header with encoded length into w
 type MessageLengthWriter func(w io.Writer, length int) (int, error)
 
+// CABNOTE this change allows clients to provide their own underlying connection
+//   while having consistent usage of Connect().
+//   Currently you need to use NewFrom() to use an existing connection, but then
+//   then the OnConnect and ConnectionEstablished handlers will never be called
+//   This allows clients to use uncommon connection configurations without needing to
+//   add each possible option to the library.
+
+// CABNOTE try replacing in places used with a default tcp, and default tls
+//   just to ensure that the usage is good
+
+// CABNOTE try replacing both New and NewFrom
+
+// NetConnFactory creates the underlying transport layer connection for the
+// Connection to use.
+type NetConnFactory func() (net.Conn, error)
+
+// CABNOTE: think about NetConnFactory name
+
+// CABNOTE: defaults for connectTimeout on the 2 below?
+
+// TCPNetConnFactory provides a NetConnFactory for a basic TCP connection
+func TCPNetConnFactory(addr string, connectTimeout time.Duration) NetConnFactory {
+	return func() (net.Conn, error) {
+		d := &net.Dialer{Timeout: connectTimeout}
+		return d.Dial("tcp", addr)
+	}
+}
+
+// CABNOTE: need to try using this one somewhere and see if it sucks to replace
+// TLSNetConnFactory provides a NetConnFactory for a basic TLS connection
+func TLSNetConnFactory(addr string, connectTimeout time.Duration, options ...TLSOption) NetConnFactory {
+	return func() (net.Conn, error) {
+		d := &net.Dialer{Timeout: connectTimeout}
+		// CABNOTE: think about edge cases here? do we want to allow them to just pass in the tls.Config?
+		// Maybe a GetTLSConfig(options ...Options) (*tls.Config, error) function?
+		tlsConfig := defaultTLSConfig()
+		for _, opt := range options {
+			if err := opt(tlsConfig); err != nil {
+				return nil, fmt.Errorf("setting tls option: %v %w", opt, err)
+			}
+		}
+		return tls.DialWithDialer(d, "tcp", addr, tlsConfig)
+	}
+}
+
 // ConnectionStatus
 type Status string
 
@@ -48,9 +93,15 @@ type directWrite struct {
 // Connection represents an ISO 8583 Connection. Connection may be used
 // by multiple goroutines simultaneously.
 type Connection struct {
-	addr           string
-	Opts           Options
-	conn           io.ReadWriteCloser
+	netConnFactory NetConnFactory
+	//addr              string
+	Opts Options
+	// CABNOTE: this change is just to allow Addr() get the addr for observability
+	//  but maybe we can keep io.ReadWriteCloser but make the builder func(addr string) (net.Conn, error)
+	// 	so we can save the addr here
+	// 	or define our own interface with Read, Write, Close, Addr lol
+	//conn           io.ReadWriteCloser
+	conn           net.Conn
 	requestsCh     chan request
 	readResponseCh chan *iso8583.Message
 	directWriteCh  chan directWrite
@@ -85,8 +136,16 @@ type Connection struct {
 
 var _ io.Writer = (*Connection)(nil)
 
-// New creates and configures Connection. To establish network connection, call `Connect()`.
-func New(addr string, spec *iso8583.MessageSpec, mlReader MessageLengthReader, mlWriter MessageLengthWriter, options ...Option) (*Connection, error) {
+// CABNOTE: rename New and NewFrom?
+//   - New -> NewClient?
+//   - NewFrom -> NewServer?
+//   New expects to be a client since it expects for Connect to be called afterwards
+//   NewFrom does not expect for connect to be called since the underlying connection has been established
+//   which is what happens as the server since establishes the connection.
+
+// New creates and configures a new Connection.
+// To connect to a server call Connection.Connect().
+func New(netConnFactory NetConnFactory, spec *iso8583.MessageSpec, mlReader MessageLengthReader, mlWriter MessageLengthWriter, options ...Option) (*Connection, error) {
 	opts := GetDefaultOptions()
 	for _, opt := range options {
 		if err := opt(&opts); err != nil {
@@ -95,7 +154,8 @@ func New(addr string, spec *iso8583.MessageSpec, mlReader MessageLengthReader, m
 	}
 
 	return &Connection{
-		addr:               addr,
+		//addr:               addr,
+		netConnFactory:     netConnFactory,
 		Opts:               opts,
 		requestsCh:         make(chan request),
 		readResponseCh:     make(chan *iso8583.Message),
@@ -108,11 +168,11 @@ func New(addr string, spec *iso8583.MessageSpec, mlReader MessageLengthReader, m
 	}, nil
 }
 
-// NewFrom accepts conn (net.Conn, or any io.ReadWriteCloser) which will be
-// used as a transport for the returned Connection. Returned Connection is
-// ready to be used for message sending and receiving
-func NewFrom(conn io.ReadWriteCloser, spec *iso8583.MessageSpec, mlReader MessageLengthReader, mlWriter MessageLengthWriter, options ...Option) (*Connection, error) {
-	c, err := New("", spec, mlReader, mlWriter, options...)
+// NewFrom creates a new Connection based on an existing net.Conn
+// and starts using it to send and receive messages.
+// This can be used to allow servers to create a Connection when a client connects.
+func NewFrom(conn net.Conn, spec *iso8583.MessageSpec, mlReader MessageLengthReader, mlWriter MessageLengthWriter, options ...Option) (*Connection, error) {
+	c, err := New(nil, spec, mlReader, mlWriter, options...)
 	if err != nil {
 		return nil, fmt.Errorf("creating client: %w", err)
 	}
@@ -132,26 +192,35 @@ func (c *Connection) SetOptions(options ...Option) error {
 	return nil
 }
 
-// Connect establishes the connection to the server using configured Addr
+// Connect creates a connection to and starts using it send/receive messages.
+// The configured NetConnFactory is used to create the underlying network connection.
+// If there is already an established connection, Connect does nothing.
 func (c *Connection) Connect() error {
-	var conn net.Conn
-	var err error
+	//var conn net.Conn
+	//var err error
 
+	// if the connection is already created then don't start running a new one
 	if c.conn != nil {
-		c.run()
 		return nil
 	}
 
-	d := &net.Dialer{Timeout: c.Opts.ConnectTimeout}
-
-	if c.Opts.TLSConfig != nil {
-		conn, err = tls.DialWithDialer(d, "tcp", c.addr, c.Opts.TLSConfig)
-	} else {
-		conn, err = d.Dial("tcp", c.addr)
+	//d := &net.Dialer{Timeout: c.Opts.ConnectTimeout}
+	//
+	//if c.Opts.TLSConfig != nil {
+	//	conn, err = tls.DialWithDialer(d, "tcp", c.addr, c.Opts.TLSConfig)
+	//} else {
+	//	conn, err = d.Dial("tcp", c.addr)
+	//}
+	//
+	//if err != nil {
+	//	return fmt.Errorf("connecting to server %s: %w", c.addr, err)
+	//}
+	if c.netConnFactory == nil {
+		return fmt.Errorf("cannot create connection, connection builder is nil")
 	}
-
+	conn, err := c.netConnFactory()
 	if err != nil {
-		return fmt.Errorf("connecting to server %s: %w", c.addr, err)
+		return fmt.Errorf("building connection: %w", err)
 	}
 
 	c.conn = conn
@@ -165,7 +234,8 @@ func (c *Connection) Connect() error {
 			// as it's a rare case
 			_ = c.Close()
 
-			return fmt.Errorf("on connect callback %s: %w", c.addr, err)
+			// return fmt.Errorf("on connect callback %s: %w", c.addr, err)
+			return fmt.Errorf("on connect callback: %w", err)
 		}
 	}
 
@@ -708,5 +778,5 @@ func (c *Connection) Status() Status {
 
 // Addr returns the remote address of the connection
 func (c *Connection) Addr() string {
-	return c.addr
+	return c.conn.RemoteAddr().String()
 }

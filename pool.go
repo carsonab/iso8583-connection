@@ -76,7 +76,7 @@ func (p *Pool) Connect() error {
 
 		err = conn.Connect()
 		if err != nil {
-			p.handleError(fmt.Errorf("connecting to %s: %w", conn.addr, err))
+			p.handleError(fmt.Errorf("connecting to %s: %w", conn.Addr(), err))
 			p.wg.Add(1)
 			go p.recreateConnection(conn)
 			continue
@@ -172,9 +172,9 @@ func (p *Pool) recreateConnection(closedConn *Connection) {
 	var err error
 	for {
 
-		conn, err = p.Factory(closedConn.addr)
+		conn, err = p.Factory(closedConn.Addr())
 		if err != nil {
-			p.handleError(fmt.Errorf("failed to re-create connection for %s: %w", closedConn.addr, err))
+			p.handleError(fmt.Errorf("failed to re-create connection for %s: %w", closedConn.Addr(), err))
 			return
 		}
 
@@ -187,7 +187,7 @@ func (p *Pool) recreateConnection(closedConn *Connection) {
 			break
 		}
 
-		p.handleError(fmt.Errorf("failed to reconnect to %s: %w", conn.addr, err))
+		p.handleError(fmt.Errorf("failed to reconnect to %s: %w", conn.Addr(), err))
 		select {
 		case <-time.After(p.Opts.ReconnectWait):
 			continue
