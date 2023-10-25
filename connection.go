@@ -646,21 +646,27 @@ func (c *Connection) readMessage(r io.Reader) (*iso8583.Message, error) {
 	// default message reader
 	messageLength, err := c.readMessageLength(r)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read message length: %w", err)
+		e := fmt.Errorf("failed to read message length: %w", err)
+		fmt.Println(fmt.Errorf("readMessage: %w", e))
+		return nil, e
 	}
 
 	// read the packed message
 	rawMessage := make([]byte, messageLength)
 	_, err = io.ReadFull(r, rawMessage)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read message from connection: %w", err)
+		e := fmt.Errorf("failed to read message from connection: %w", err)
+		fmt.Println(fmt.Errorf("readMessage: %w", e))
+		return nil, e
 	}
 
 	// unpack the message
 	message := iso8583.NewMessage(c.spec)
 	err = message.Unpack(rawMessage)
 	if err != nil {
-		return nil, fmt.Errorf("unpacking message: %w", err)
+		e := fmt.Errorf("unpacking message: %w", err)
+		fmt.Println(fmt.Errorf("readMessage: %w", e))
+		return nil, e
 	}
 
 	return message, nil
